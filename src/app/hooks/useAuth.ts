@@ -10,6 +10,10 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../../lib/firebase';
+import { isNativeApp } from '../../lib/platform';
+import { initializeGoogleAuth, signInWithGoogleNative, signOutGoogleNative } from '../../lib/nativeAuth';
+import { initSentry } from '../../lib/sentry';
+import { setUserId, analytics } from '../../lib/analytics';
 import type { User as AppUser } from '../types';
 
 export const useAuth = () => {
@@ -18,18 +22,40 @@ export const useAuth = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Initialize Google Auth for native platforms
+    if (isNativeApp) {
+      initializeGoogleAuth();
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         await createOrUpdateUserDoc(firebaseUser);
-        setUser({
+        const appUser = {
           uid: firebaseUser.uid,
           displayName: firebaseUser.displayName,
           email: firebaseUser.email,
           photoURL: firebaseUser.photoURL,
           createdAt: new Date(),
+        };
+        setUser(appUser);
+        
+        // Set Sentry user context
+        const sentry = initSentry();
+        sentry?.setUserContext({
+          uid: firebaseUser.uid,
+          email: firebaseUser.email,
         });
+        
+        // Set GA4 user ID
+        setUserId(firebaseUser.uid);
       } else {
         setUser(null);
+        // Clear Sentry user context
+        const sentry = initSentry();
+        sentry?.setUserContext({} as any);
+        
+        // Clear GA4 user ID
+        setUserId('');
       }
       setLoading(false);
     });
@@ -60,6 +86,8 @@ export const useAuth = () => {
       await updateProfile(result.user, { displayName });
       await createOrUpdateUserDoc(result.user);
       
+      analytics.signUp('email');
+      
       return result.user;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
@@ -76,6 +104,7 @@ export const useAuth = () => {
       setLoading(true);
       
       const result = await signInWithEmailAndPassword(auth, email, password);
+      analytics.signIn('email');
       return result.user;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
@@ -91,9 +120,17 @@ export const useAuth = () => {
       setError(null);
       setLoading(true);
       
-      const result = await signInWithPopup(auth, googleProvider);
-      await createOrUpdateUserDoc(result.user);
-      return result.user;
+      if (isNativeApp) {
+        const result = await signInWithGoogleNative();
+        await createOrUpdateUserDoc(result.user);
+        analytics.signIn('google');
+        return result.user;
+      } else {
+        const result = await signInWithPopup(auth, googleProvider);
+        await createOrUpdateUserDoc(result.user);
+        analytics.signIn('google');
+        return result.user;
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       setError(errorMessage);
@@ -106,6 +143,10 @@ export const useAuth = () => {
   const logout = async () => {
     try {
       setError(null);
+      analytics.signOut();
+      if (isNativeApp) {
+        await signOutGoogleNative();
+      }
       await signOut(auth);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';

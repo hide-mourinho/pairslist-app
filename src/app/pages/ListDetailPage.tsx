@@ -1,8 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useListItems } from '../hooks/useListItems';
 import { useInvites } from '../hooks/useInvites';
 import { LoadingSpinner } from '../components/LoadingSpinner';
+import { Toast, useToast } from '../components/Toast';
+import { MemberManagementModal } from '../components/MemberManagementModal';
+import { useAuth } from '../hooks/useAuth';
+import { useUserInfo, formatLastUpdated } from '../hooks/useUserInfo';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 
 export const ListDetailPage = () => {
   const { id } = useParams<{ id: string }>();
@@ -11,9 +17,37 @@ export const ListDetailPage = () => {
   const [newItemQty, setNewItemQty] = useState('1');
   const [isAdding, setIsAdding] = useState(false);
   const [showInviteDialog, setShowInviteDialog] = useState(false);
+  const [showMemberManagement, setShowMemberManagement] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
+  const [isMember, setIsMember] = useState<boolean | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
 
   const { items, loading, error, addItem, toggleItemCheck, deleteItem } = useListItems(id || '');
   const { createInvite } = useInvites();
+  const { toast, showToast, hideToast } = useToast();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    const checkMembership = async () => {
+      if (!user || !id) return;
+      
+      try {
+        const memberDoc = await getDoc(doc(db, `lists/${id}/members/${user.uid}`));
+        if (memberDoc.exists()) {
+          setIsMember(true);
+          setIsOwner(memberDoc.data()?.role === 'owner');
+        } else {
+          setIsMember(false);
+        }
+      } catch (err) {
+        console.error('Error checking membership:', err);
+        setIsMember(false);
+      }
+    };
+
+    checkMembership();
+  }, [user, id]);
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,17 +93,38 @@ export const ListDetailPage = () => {
     
     try {
       const result = await createInvite(id, true);
-      await navigator.clipboard.writeText(result.url);
-      alert('招待リンクをクリップボードにコピーしました！');
-      setShowInviteDialog(false);
+      setInviteUrl(result.url);
+      setInviteToken(result.token);
+      try {
+        await navigator.clipboard.writeText(result.url);
+        showToast('招待リンクをクリップボードにコピーしました！', 'success');
+      } catch (clipboardError) {
+        console.error('Failed to copy to clipboard:', clipboardError);
+        showToast('クリップボードへのコピーに失敗しました。手動でコピーしてください。', 'error');
+      }
     } catch (error) {
       console.error('Failed to create invite:', error);
-      alert('招待リンクの作成に失敗しました');
+      showToast('招待リンクの作成に失敗しました', 'error');
     }
   };
 
-  if (loading) {
+  if (loading || isMember === null) {
     return <LoadingSpinner />;
+  }
+
+  if (isMember === false) {
+    return (
+      <div className="text-center py-12">
+        <div className="text-red-500 mb-4">
+          <svg className="mx-auto h-12 w-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-medium text-gray-900 mb-2">アクセス権限がありません</h3>
+        <p className="text-gray-500 mb-4">このリストを表示する権限がありません。</p>
+        <Link to="/lists" className="text-blue-600 hover:text-blue-800">リスト一覧に戻る</Link>
+      </div>
+    );
   }
 
   const uncheckedItems = items.filter(item => !item.checked);
@@ -89,15 +144,28 @@ export const ListDetailPage = () => {
           </Link>
           <h1 className="text-2xl font-bold text-gray-900">買い物リスト</h1>
         </div>
-        <button
-          onClick={() => setShowInviteDialog(true)}
-          className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-        >
-          <svg className="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-          </svg>
-          共有
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => setShowMemberManagement(true)}
+            className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            <svg className="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            メンバー
+          </button>
+          {isOwner && (
+            <button
+              onClick={() => setShowInviteDialog(true)}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              <svg className="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+              </svg>
+              共有
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -173,6 +241,7 @@ export const ListDetailPage = () => {
                   </div>
                 </div>
                 {item.note && <p className="text-sm text-gray-500">{item.note}</p>}
+                <UpdatedByInfo item={item} />
               </div>
             </div>
           ))}
@@ -211,6 +280,7 @@ export const ListDetailPage = () => {
                   </div>
                 </div>
                 {item.note && <p className="text-sm text-gray-400 line-through">{item.note}</p>}
+                <UpdatedByInfo item={item} />
               </div>
             </div>
           ))}
@@ -238,12 +308,54 @@ export const ListDetailPage = () => {
                 <p className="text-sm text-gray-500 mb-4">
                   このリンクを家族や友人に送って、一緒にリストを編集できるようにしましょう
                 </p>
-                <button
-                  onClick={handleCreateInvite}
-                  className="w-full inline-flex justify-center px-4 py-2 bg-blue-600 text-white text-base font-medium rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  招待リンクをコピー
-                </button>
+                {inviteUrl ? (
+                  <div className="space-y-4">
+                    <div className="p-3 bg-gray-100 rounded-md">
+                      <p className="text-xs text-gray-600 mb-1">招待リンク:</p>
+                      <p className="text-sm font-mono break-all">{inviteUrl}</p>
+                    </div>
+                    <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+                      <p className="text-sm text-yellow-800 font-medium mb-1">招待コード（手入力用）:</p>
+                      <p className="text-xl font-mono font-bold text-center bg-white px-3 py-2 rounded border text-gray-900">{inviteToken}</p>
+                      <p className="text-xs text-yellow-700 mt-2">※ アプリでリンクが開けない場合は、このコードを手入力してください</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(inviteUrl);
+                            showToast('リンクをコピーしました！', 'success');
+                          } catch (error) {
+                            showToast('コピーに失敗しました', 'error');
+                          }
+                        }}
+                        className="inline-flex justify-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        リンクをコピー
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(inviteToken);
+                            showToast('コードをコピーしました！', 'success');
+                          } catch (error) {
+                            showToast('コピーに失敗しました', 'error');
+                          }
+                        }}
+                        className="inline-flex justify-center px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500"
+                      >
+                        コードをコピー
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleCreateInvite}
+                    className="w-full inline-flex justify-center px-4 py-2 bg-blue-600 text-white text-base font-medium rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    招待リンクを作成
+                  </button>
+                )}
               </div>
               <div className="mt-4">
                 <button
@@ -257,6 +369,36 @@ export const ListDetailPage = () => {
           </div>
         </div>
       )}
+
+      <MemberManagementModal
+        listId={id || ''}
+        isOpen={showMemberManagement}
+        onClose={() => setShowMemberManagement(false)}
+        isOwner={isOwner}
+        currentInviteToken={inviteToken}
+      />
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={hideToast}
+        />
+      )}
     </div>
+  );
+};
+
+const UpdatedByInfo = ({ item }: { item: any }) => {
+  const { userInfo } = useUserInfo(item.updatedBy);
+  
+  if (!item.updatedBy || !userInfo || item.updatedBy === item.createdBy) {
+    return null;
+  }
+  
+  return (
+    <p className="text-xs text-gray-400 mt-1">
+      {formatLastUpdated(item.updatedAt, item.updatedBy, userInfo)}
+    </p>
   );
 };

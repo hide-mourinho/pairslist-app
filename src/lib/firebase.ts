@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore, enableNetwork, disableNetwork } from 'firebase/firestore';
+import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 
 const firebaseConfig = {
@@ -15,7 +15,7 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-export const functions = getFunctions(app);
+export const functions = getFunctions(app, 'asia-northeast1');
 export const googleProvider = new GoogleAuthProvider();
 
 if (import.meta.env.DEV) {
@@ -28,9 +28,15 @@ if (import.meta.env.DEV) {
 
 export const enableOfflineSupport = async () => {
   try {
-    await disableNetwork(db);
-    await enableNetwork(db);
-  } catch (error) {
-    console.error('Error setting up offline support:', error);
+    await enableIndexedDbPersistence(db);
+    console.log('IndexedDB persistence enabled');
+  } catch (error: any) {
+    if (error.code === 'failed-precondition') {
+      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
+    } else if (error.code === 'unimplemented') {
+      console.warn('The current browser does not support all of the features required to enable persistence');
+    } else {
+      console.error('Error enabling IndexedDB persistence:', error);
+    }
   }
 };

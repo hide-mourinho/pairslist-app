@@ -14,8 +14,11 @@
   },
   "main": "lib/index.js",
   "dependencies": {
-    "firebase-admin": "^12.1.0",
+    "@sentry/react": "^10.5.0",
+    "@sentry/vite-plugin": "^4.1.1",
+    "firebase-admin": "^12.7.0",
     "firebase-functions": "^6.0.1",
+    "gtag": "^1.0.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

@@ -1,0 +1,10 @@
+
+# MCP Server
+.env.mcp
+.mcp-pids
+service-account-*.json
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/

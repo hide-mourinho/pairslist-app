@@ -22,7 +22,7 @@ service cloud.firestore {
     // List documents
     match /lists/{listId} {
       allow create: if isAuthed() && request.auth.uid == request.resource.data.createdBy;
-      allow read: if isMember(listId);
+      allow read: if isAuthed() && request.auth.uid in resource.data.members;
       allow update, delete: if isMember(listId) && role(listId) in ['owner','editor'];
     }
 
@@ -30,9 +30,12 @@ service cloud.firestore {
     match /lists/{listId}/members/{uid} {
       allow read: if isMember(listId);
       // Allow user to create their own member document (for list creation)
-      allow create: if isAuthed() && request.auth.uid == uid;
-      // Only owners can update/delete members
-      allow update, delete: if isMember(listId) && role(listId) == 'owner';
+      // Note: invites are handled through Functions, which has admin access
+      allow create: if isAuthed() && request.auth.uid == uid && request.resource.data.role == 'owner';
+      // Only owners can update members
+      allow update: if isMember(listId) && role(listId) == 'owner';
+      // Owners can delete members, or members can delete themselves (leave)
+      allow delete: if isMember(listId) && (role(listId) == 'owner' || request.auth.uid == uid);
     }
 
     // List items
@@ -46,14 +49,21 @@ service cloud.firestore {
       // Anyone authenticated can read invites to check if they exist
       allow read: if isAuthed();
       
-      // Only list owners can create invites
-      allow create: if isAuthed() 
-        && request.resource.data.listId is string
-        && exists(/databases/$(database)/documents/lists/$(request.resource.data.listId)/members/$(request.auth.uid))
-        && get(/databases/$(database)/documents/lists/$(request.resource.data.listId)/members/$(request.auth.uid)).data.role == 'owner';
+      // Only list owners can create invites (handled via Functions)
+      allow create: if false; // Only through Functions
       
-      // Only the creator can delete invites (cleanup)
-      allow delete: if isAuthed() && resource.data.createdBy == request.auth.uid;
+      // Only list owners can update invites (for revoking)
+      allow update: if isAuthed() 
+        && resource.data.listId is string
+        && exists(/databases/$(database)/documents/lists/$(resource.data.listId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/lists/$(resource.data.listId)/members/$(request.auth.uid)).data.role == 'owner'
+        && request.resource.data.revoked == true; // Only allow setting revoked to true
+      
+      // Only the creator or list owners can delete invites
+      allow delete: if isAuthed() && 
+        (resource.data.createdBy == request.auth.uid ||
+         (exists(/databases/$(database)/documents/lists/$(resource.data.listId)/members/$(request.auth.uid))
+          && get(/databases/$(database)/documents/lists/$(resource.data.listId)/members/$(request.auth.uid)).data.role == 'owner'));
     }
   }
 }

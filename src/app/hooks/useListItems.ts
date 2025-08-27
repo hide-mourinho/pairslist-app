@@ -2,16 +2,16 @@ import { useState, useEffect } from 'react';
 import {
   collection,
   doc,
-  addDoc,
-  updateDoc,
-  deleteDoc,
   query,
   orderBy,
   onSnapshot,
-  Timestamp,
+  runTransaction,
+  writeBatch,
+  serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from './useAuth';
+import { analytics } from '../../lib/analytics';
 import type { ShoppingItem } from '../types';
 
 export const useListItems = (listId: string) => {
@@ -29,7 +29,7 @@ export const useListItems = (listId: string) => {
 
     const q = query(
       collection(db, `lists/${listId}/items`),
-      orderBy('createdAt', 'desc')
+      orderBy('updatedAt', 'desc')
     );
 
     const unsubscribe = onSnapshot(
@@ -47,7 +47,7 @@ export const useListItems = (listId: string) => {
             if (a.checked !== b.checked) {
               return a.checked ? 1 : -1;
             }
-            return b.createdAt.getTime() - a.createdAt.getTime();
+            return b.updatedAt.getTime() - a.updatedAt.getTime();
           });
 
           setItems(sortedItems);
@@ -71,20 +71,30 @@ export const useListItems = (listId: string) => {
     if (!user || !listId) throw new Error('User not authenticated or list not found');
 
     try {
-      await addDoc(collection(db, `lists/${listId}/items`), {
+      const batch = writeBatch(db);
+      const itemRef = doc(collection(db, `lists/${listId}/items`));
+      const listRef = doc(db, 'lists', listId);
+      
+      batch.set(itemRef, {
         title,
         note: note || '',
         qty: qty || 1,
         checked: false,
         assignedTo: null,
         createdBy: user.uid,
-        createdAt: Timestamp.now(),
-        updatedAt: Timestamp.now(),
+        updatedBy: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
       
-      await updateDoc(doc(db, 'lists', listId), {
-        updatedAt: Timestamp.now(),
+      batch.update(listRef, {
+        updatedAt: serverTimestamp(),
       });
+      
+      await batch.commit();
+      
+      // Track analytics
+      analytics.itemAdd(listId, itemRef.id);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to add item');
       throw error;
@@ -97,41 +107,97 @@ export const useListItems = (listId: string) => {
     qty?: number;
     checked?: boolean;
     assignedTo?: string | null;
-  }) => {
-    if (!listId) throw new Error('List not found');
+  }, options?: { optimistic?: boolean }) => {
+    if (!listId || !user) throw new Error('List not found or user not authenticated');
+
+    // Find current item for optimistic UI
+    const currentItem = items.find(item => item.id === itemId);
+    
+    if (options?.optimistic && currentItem) {
+      // Apply optimistic update
+      const optimisticItem = {
+        ...currentItem,
+        ...updates,
+        updatedAt: new Date(),
+        updatedBy: user.uid,
+      };
+      setItems(prev => prev.map(item => item.id === itemId ? optimisticItem : item));
+    }
 
     try {
-      await updateDoc(doc(db, `lists/${listId}/items`, itemId), {
-        ...updates,
-        updatedAt: Timestamp.now(),
+      await runTransaction(db, async (transaction) => {
+        const itemRef = doc(db, `lists/${listId}/items`, itemId);
+        const listRef = doc(db, 'lists', listId);
+        
+        transaction.update(itemRef, {
+          ...updates,
+          updatedBy: user.uid,
+          updatedAt: serverTimestamp(),
+        });
+        
+        transaction.update(listRef, {
+          updatedAt: serverTimestamp(),
+        });
       });
-
-      await updateDoc(doc(db, 'lists', listId), {
-        updatedAt: Timestamp.now(),
-      });
+      
+      // Track analytics
+      if (updates.checked !== undefined) {
+        analytics.itemCheck(listId, itemId, updates.checked);
+      } else {
+        analytics.itemUpdate(listId, itemId);
+      }
     } catch (error) {
+      // Rollback optimistic update on error
+      if (options?.optimistic && currentItem) {
+        setItems(prev => prev.map(item => item.id === itemId ? currentItem : item));
+      }
       setError(error instanceof Error ? error.message : 'Failed to update item');
       throw error;
     }
   };
 
-  const deleteItem = async (itemId: string) => {
+  const deleteItem = async (itemId: string, options?: { optimistic?: boolean }) => {
     if (!listId) throw new Error('List not found');
 
+    // Find current item for optimistic UI
+    const currentItem = items.find(item => item.id === itemId);
+    
+    if (options?.optimistic && currentItem) {
+      // Apply optimistic delete
+      setItems(prev => prev.filter(item => item.id !== itemId));
+    }
+
     try {
-      await deleteDoc(doc(db, `lists/${listId}/items`, itemId));
+      const batch = writeBatch(db);
+      const itemRef = doc(db, `lists/${listId}/items`, itemId);
+      const listRef = doc(db, 'lists', listId);
       
-      await updateDoc(doc(db, 'lists', listId), {
-        updatedAt: Timestamp.now(),
+      batch.delete(itemRef);
+      batch.update(listRef, {
+        updatedAt: serverTimestamp(),
       });
+      
+      await batch.commit();
+      
+      // Track analytics
+      analytics.itemDelete(listId, itemId);
     } catch (error) {
+      // Rollback optimistic delete on error
+      if (options?.optimistic && currentItem) {
+        setItems(prev => [...prev, currentItem].sort((a, b) => {
+          if (a.checked !== b.checked) {
+            return a.checked ? 1 : -1;
+          }
+          return b.updatedAt.getTime() - a.updatedAt.getTime();
+        }));
+      }
       setError(error instanceof Error ? error.message : 'Failed to delete item');
       throw error;
     }
   };
 
   const toggleItemCheck = async (itemId: string, checked: boolean) => {
-    await updateItem(itemId, { checked });
+    await updateItem(itemId, { checked }, { optimistic: true });
   };
 
   return {

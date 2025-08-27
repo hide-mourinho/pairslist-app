@@ -5,17 +5,16 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
-  getDoc,
   query,
   where,
   orderBy,
   onSnapshot,
   Timestamp,
   setDoc,
-  collectionGroup,
 } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from './useAuth';
+import { analytics } from '../../lib/analytics';
 import type { ShoppingList } from '../types';
 
 export const useLists = () => {
@@ -31,57 +30,34 @@ export const useLists = () => {
       return;
     }
 
-    // Query the user's memberships directly using collection group
-    const memberQuery = query(
-      collectionGroup(db, 'members'),
-      where('__name__', '==', user.uid)
+    // Query lists where user is a member using array-contains
+    const listsQuery = query(
+      collection(db, 'lists'),
+      where('members', 'array-contains', user.uid),
+      orderBy('updatedAt', 'desc')
     );
 
     const unsubscribe = onSnapshot(
-      memberQuery,
-      async (snapshot) => {
+      listsQuery,
+      (snapshot) => {
         try {
-          const userLists: ShoppingList[] = [];
-          
-          // Get the parent list documents for each membership
-          const listPromises = snapshot.docs.map(async (memberDoc) => {
-            try {
-              // Extract list ID from the member document path
-              const listId = memberDoc.ref.parent.parent?.id;
-              if (!listId) return null;
-
-              // Get the list document
-              const listDocRef = doc(db, 'lists', listId);
-              const listDoc = await getDoc(listDocRef);
-              
-              if (listDoc.exists()) {
-                const data = listDoc.data();
-                return {
-                  id: listId,
-                  name: data.name,
-                  createdBy: data.createdBy,
-                  createdAt: data.createdAt?.toDate() || new Date(),
-                  updatedAt: data.updatedAt?.toDate() || new Date(),
-                };
-              }
-            } catch (err) {
-              console.warn(`Failed to fetch list for member doc ${memberDoc.id}:`, err);
-            }
-            return null;
+          const userLists: ShoppingList[] = snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              name: data.name,
+              createdBy: data.createdBy,
+              createdAt: data.createdAt?.toDate() || new Date(),
+              updatedAt: data.updatedAt?.toDate() || new Date(),
+            };
           });
-
-          const results = await Promise.all(listPromises);
-          const filteredLists = results.filter((list): list is ShoppingList => list !== null);
           
-          // Sort by updatedAt descending
-          filteredLists.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-          
-          setLists(filteredLists);
+          setLists(userLists);
           setError(null);
+          setLoading(false);
         } catch (err) {
           console.error('Error fetching lists:', err);
           setError(err instanceof Error ? err.message : 'An error occurred');
-        } finally {
           setLoading(false);
         }
       },
@@ -102,6 +78,7 @@ export const useLists = () => {
       const listRef = await addDoc(collection(db, 'lists'), {
         name,
         createdBy: user.uid,
+        members: [user.uid],
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       });
@@ -110,6 +87,9 @@ export const useLists = () => {
         role: 'owner',
         joinedAt: Timestamp.now(),
       });
+      
+      // Track analytics
+      analytics.listCreate(listRef.id);
 
       return listRef.id;
     } catch (error) {
@@ -133,6 +113,9 @@ export const useLists = () => {
   const deleteList = async (listId: string) => {
     try {
       await deleteDoc(doc(db, 'lists', listId));
+      
+      // Track analytics
+      analytics.listDelete(listId);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to delete list');
       throw error;
