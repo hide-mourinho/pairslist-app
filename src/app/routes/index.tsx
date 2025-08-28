@@ -5,6 +5,7 @@ import { SignUpPage } from '../pages/SignUpPage';
 import { ListsPage } from '../pages/ListsPage';
 import { ListDetailPage } from '../pages/ListDetailPage';
 import { AcceptInvitePage } from '../pages/AcceptInvitePage';
+import { SettingsPage } from '../pages/SettingsPage';
 import { Layout } from '../components/Layout';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 
@@ -81,6 +82,14 @@ export const AppRouter = () => {
               <Layout>
                 <ListDetailPage />
               </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <SettingsPage />
             </ProtectedRoute>
           }
         />

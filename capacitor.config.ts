@@ -9,11 +9,21 @@ const config: CapacitorConfig = {
     // url: 'http://192.168.0.10:5173',
     // cleartext: true
   },
+  android: {
+    backgroundColor: '#ffffff',
+  },
   plugins: {
     GoogleAuth: {
       scopes: ['profile', 'email'],
       serverClientId: process.env.VITE_GOOGLE_CLIENT_ID || '',
       forceCodeForRefreshToken: true,
+    },
+    StatusBar: {
+      style: 'LIGHT',
+      backgroundColor: '#ffffff',
+    },
+    PurchasesPlugin: {
+      // RevenueCat configuration will be done in app initialization
     },
   },
 };

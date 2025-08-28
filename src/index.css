@@ -14,16 +14,33 @@ body {
 /* Safe area insets for mobile devices */
 .pt-safe {
   padding-top: env(safe-area-inset-top);
+  /* Fallback for Android where safe-area-inset might not work */
+  padding-top: constant(safe-area-inset-top);
+}
+
+/* Android specific status bar height (typically 24dp = ~25px) */
+@supports not (padding-top: env(safe-area-inset-top)) {
+  .pt-safe {
+    padding-top: 25px;
+  }
+}
+
+/* Additional Android status bar padding class */
+.android-status-bar {
+  padding-top: 25px;
 }
 
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: constant(safe-area-inset-bottom);
 }
 
 .pl-safe {
   padding-left: env(safe-area-inset-left);
+  padding-left: constant(safe-area-inset-left);
 }
 
 .pr-safe {
   padding-right: env(safe-area-inset-right);
+  padding-right: constant(safe-area-inset-right);
 }

@@ -17,6 +17,12 @@ service cloud.firestore {
     // User documents
     match /users/{uid} {
       allow read, write: if isAuthed() && request.auth.uid == uid;
+      
+      // Entitlements subcollection (Pro status)
+      match /entitlements/{entitlementId} {
+        allow read: if isAuthed() && request.auth.uid == uid;
+        allow write: if false; // Only through Functions/webhooks
+      }
     }
 
     // List documents

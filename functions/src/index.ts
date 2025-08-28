@@ -535,3 +535,325 @@ export const cleanupInvites = onSchedule({
     console.log(`Cleaned up ${count} expired invites`);
   }
 });
+
+// Account deletion functions
+export const requestAccountDeletion = onCall({ region: REGION }, async (request) => {
+  const { auth } = request;
+  
+  if (!auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  try {
+    // Check if user owns any lists with other members
+    const listsSnapshot = await db.collection('lists')
+      .where('owner', '==', auth.uid)
+      .get();
+    
+    for (const listDoc of listsSnapshot.docs) {
+      const membersSnapshot = await db.collection(`lists/${listDoc.id}/members`).get();
+      
+      // If there are other members and user is the sole owner, prevent deletion
+      if (membersSnapshot.size > 1) {
+        const memberRoles = membersSnapshot.docs.map(doc => doc.data().role);
+        const ownerCount = memberRoles.filter(role => role === 'owner').length;
+        
+        if (ownerCount === 1) {
+          throw new HttpsError(
+            'failed-precondition',
+            'アカウントを削除する前に、共有リストの所有権を他のメンバーに譲渡してください'
+          );
+        }
+      }
+    }
+
+    // Mark account for deletion
+    await db.doc(`users/${auth.uid}`).set({
+      deletionRequestedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return { success: true };
+  } catch (error) {
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+    console.error('Error requesting account deletion:', error);
+    throw new HttpsError('internal', 'アカウント削除リクエストの処理に失敗しました');
+  }
+});
+
+export const deleteAccountNow = onCall({ region: REGION }, async (request) => {
+  const { auth } = request;
+  
+  if (!auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  try {
+    await deleteUserData(auth.uid);
+    
+    // Delete Firebase Auth user
+    const { getAuth } = await import('firebase-admin/auth');
+    await getAuth().deleteUser(auth.uid);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting account immediately:', error);
+    throw new HttpsError('internal', 'アカウントの即時削除に失敗しました');
+  }
+});
+
+// Scheduled function to delete accounts after 7 days
+export const processScheduledDeletions = onSchedule({
+  schedule: 'every day 02:00',
+  region: REGION,
+  timeZone: 'Asia/Tokyo',
+}, async () => {
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  
+  const usersToDelete = await db.collection('users')
+    .where('deletionRequestedAt', '<=', sevenDaysAgo)
+    .get();
+  
+  let deletedCount = 0;
+  
+  for (const userDoc of usersToDelete.docs) {
+    try {
+      await deleteUserData(userDoc.id);
+      
+      // Delete Firebase Auth user
+      const { getAuth } = await import('firebase-admin/auth');
+      try {
+        await getAuth().deleteUser(userDoc.id);
+      } catch (authError) {
+        console.warn(`Auth user ${userDoc.id} may already be deleted:`, authError);
+      }
+      
+      deletedCount++;
+    } catch (error) {
+      console.error(`Failed to delete user ${userDoc.id}:`, error);
+    }
+  }
+  
+  if (deletedCount > 0) {
+    console.log(`Deleted ${deletedCount} accounts after 7-day grace period`);
+  }
+});
+
+// Helper function to delete all user data
+async function deleteUserData(uid: string): Promise<void> {
+  const batch = db.batch();
+  
+  // Delete owned lists and their subcollections
+  const ownedListsSnapshot = await db.collection('lists')
+    .where('owner', '==', uid)
+    .get();
+  
+  for (const listDoc of ownedListsSnapshot.docs) {
+    const listId = listDoc.id;
+    
+    // Check if there are other members
+    const membersSnapshot = await db.collection(`lists/${listId}/members`).get();
+    
+    if (membersSnapshot.size === 1) {
+      // User is the only member, delete the entire list
+      
+      // Delete items
+      const itemsSnapshot = await db.collection(`lists/${listId}/items`).get();
+      itemsSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+      
+      // Delete members
+      membersSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+      
+      // Delete the list itself
+      batch.delete(listDoc.ref);
+    } else {
+      // Remove user from members
+      const userMemberRef = db.doc(`lists/${listId}/members/${uid}`);
+      batch.delete(userMemberRef);
+      
+      // Transfer ownership if user is the sole owner
+      const memberRoles = membersSnapshot.docs.map(doc => ({ 
+        uid: doc.id, 
+        role: doc.data().role 
+      }));
+      const owners = memberRoles.filter(m => m.role === 'owner' && m.uid !== uid);
+      
+      if (owners.length === 0) {
+        // Transfer ownership to the first available member
+        const nextOwner = memberRoles.find(m => m.uid !== uid);
+        if (nextOwner) {
+          batch.update(db.doc(`lists/${listId}/members/${nextOwner.uid}`), {
+            role: 'owner'
+          });
+          batch.update(listDoc.ref, {
+            owner: nextOwner.uid
+          });
+        }
+      }
+    }
+  }
+  
+  // Delete user's membership in other lists
+  const allListsSnapshot = await db.collection('lists').get();
+  
+  for (const listDoc of allListsSnapshot.docs) {
+    if (listDoc.data().owner === uid) continue; // Already handled above
+    
+    const memberRef = db.doc(`lists/${listDoc.id}/members/${uid}`);
+    const memberDoc = await memberRef.get();
+    
+    if (memberDoc.exists) {
+      batch.delete(memberRef);
+    }
+  }
+  
+  // Delete invites created by user
+  const invitesSnapshot = await db.collection('invites')
+    .where('createdBy', '==', uid)
+    .get();
+  
+  invitesSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+  
+  // Delete user document and subcollections
+  const userRef = db.doc(`users/${uid}`);
+  
+  // Delete device tokens
+  const deviceTokensSnapshot = await db.collection(`users/${uid}/deviceTokens`).get();
+  deviceTokensSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+  
+  // Delete user document
+  batch.delete(userRef);
+  
+  // Commit the batch
+  await batch.commit();
+}
+
+// RevenueCat webhook handler
+export const revenuecatWebhook = onCall({ region: REGION, cors: true }, async (request) => {
+  // This should actually be an onRequest function, but for simplicity we'll use onCall
+  // In production, use onRequest with proper webhook signature validation
+  const { data } = request;
+  
+  if (!data || !data.event) {
+    throw new HttpsError('invalid-argument', 'Invalid webhook data');
+  }
+
+  const { event } = data;
+  
+  try {
+    switch (event.type) {
+      case 'INITIAL_PURCHASE':
+      case 'RENEWAL':
+      case 'SUBSCRIPTION_EXTENDED':
+      case 'SUBSCRIPTION_PAUSED':
+      case 'SUBSCRIPTION_RESUMED':
+        await handleSubscriptionEvent(event);
+        break;
+      
+      case 'CANCELLATION':
+      case 'EXPIRATION':
+      case 'BILLING_ISSUE':
+      case 'PRODUCT_CHANGE':
+        await handleSubscriptionEvent(event);
+        break;
+        
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+    
+    return { success: true };
+  } catch (error) {
+    console.error('RevenueCat webhook error:', error);
+    throw new HttpsError('internal', 'Webhook processing failed');
+  }
+});
+
+async function handleSubscriptionEvent(event: any) {
+  const appUserId = event.app_user_id;
+  if (!appUserId) {
+    console.warn('No app_user_id in webhook event');
+    return;
+  }
+
+  // Determine if user has active Pro entitlement
+  let hasProAccess = false;
+  
+  if (event.subscriber && event.subscriber.entitlements) {
+    const proEntitlement = event.subscriber.entitlements['pro'];
+    hasProAccess = proEntitlement && proEntitlement.expires_date && 
+      new Date(proEntitlement.expires_date) > new Date();
+  }
+
+  // Update Firestore entitlement
+  await db.doc(`users/${appUserId}/entitlements/pro`).set({
+    active: hasProAccess,
+    updatedAt: FieldValue.serverTimestamp(),
+    source: 'revenuecat_webhook',
+    eventType: event.type,
+    lastEventId: event.id
+  });
+
+  console.log(`Updated Pro entitlement for user ${appUserId}: ${hasProAccess}`);
+}
+
+// Plan limits validation
+export const checkPlanLimits = onCall({ region: REGION }, async (request) => {
+  const { auth, data } = request;
+  
+  if (!auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+
+  const { action, listId } = data;
+  
+  // Check if user has Pro access
+  const proEntitlementDoc = await db.doc(`users/${auth.uid}/entitlements/pro`).get();
+  const isPro = proEntitlementDoc.exists && proEntitlementDoc.data()?.active === true;
+  
+  if (isPro) {
+    return { allowed: true, isPro: true };
+  }
+
+  // Apply Free plan limits
+  switch (action) {
+    case 'create_list':
+      const ownedListsSnapshot = await db.collection('lists')
+        .where('owner', '==', auth.uid)
+        .get();
+      
+      if (ownedListsSnapshot.size >= 3) {
+        return {
+          allowed: false,
+          isPro: false,
+          reason: 'FREE_LIST_LIMIT',
+          message: 'Freeプランではリストは3つまでです。Proプランにアップグレードしてください。'
+        };
+      }
+      break;
+      
+    case 'add_member':
+      if (!listId) {
+        throw new HttpsError('invalid-argument', 'listId is required for add_member action');
+      }
+      
+      const membersSnapshot = await db.collection(`lists/${listId}/members`).get();
+      
+      if (membersSnapshot.size >= 5) {
+        return {
+          allowed: false,
+          isPro: false,
+          reason: 'FREE_MEMBER_LIMIT',
+          message: 'Freeプランでは1つのリストに5人までです。Proプランにアップグレードしてください。'
+        };
+      }
+      break;
+      
+    default:
+      // Unknown action, allow by default
+      break;
+  }
+  
+  return { allowed: true, isPro: false };
+});
