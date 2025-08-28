@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useListItems } from '../hooks/useListItems';
 import { useInvites } from '../hooks/useInvites';
+import { useMembers } from '../hooks/useMembers';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 import { Toast, useToast } from '../components/Toast';
 import { MemberManagementModal } from '../components/MemberManagementModal';
 import { useAuth } from '../hooks/useAuth';
 import { useUserInfo, formatLastUpdated } from '../hooks/useUserInfo';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 
 export const ListDetailPage = () => {
@@ -15,7 +16,13 @@ export const ListDetailPage = () => {
   const [newItemTitle, setNewItemTitle] = useState('');
   const [newItemNote, setNewItemNote] = useState('');
   const [newItemQty, setNewItemQty] = useState('1');
+  const [newItemDueDate, setNewItemDueDate] = useState('');
+  const [newItemDueTime, setNewItemDueTime] = useState('');
+  const [newItemRepeat, setNewItemRepeat] = useState<'none' | 'daily' | 'weekly' | 'weekdays'>('none');
+  const [newItemAssignee, setNewItemAssignee] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'overdue' | 'today' | 'assigned'>('all');
   const [showInviteDialog, setShowInviteDialog] = useState(false);
   const [showMemberManagement, setShowMemberManagement] = useState(false);
   const [inviteUrl, setInviteUrl] = useState('');
@@ -25,6 +32,7 @@ export const ListDetailPage = () => {
 
   const { items, loading, error, addItem, toggleItemCheck, deleteItem } = useListItems(id || '');
   const { createInvite } = useInvites();
+  const { members } = useMembers(id || '');
   const { toast, showToast, hideToast } = useToast();
   const { user } = useAuth();
 
@@ -55,14 +63,29 @@ export const ListDetailPage = () => {
 
     try {
       setIsAdding(true);
-      await addItem(
-        newItemTitle.trim(),
-        newItemNote.trim() || undefined,
-        parseInt(newItemQty) || 1
-      );
+      
+      let dueAt: Timestamp | null = null;
+      if (newItemDueDate) {
+        const dueDateTime = new Date(newItemDueDate + (newItemDueTime ? `T${newItemDueTime}` : 'T23:59'));
+        dueAt = Timestamp.fromDate(dueDateTime);
+      }
+      
+      await addItem(newItemTitle.trim(), {
+        note: newItemNote.trim() || undefined,
+        qty: parseInt(newItemQty) || 1,
+        dueAt,
+        repeat: newItemRepeat,
+        assigneeUid: newItemAssignee || null,
+      });
+      
       setNewItemTitle('');
       setNewItemNote('');
       setNewItemQty('1');
+      setNewItemDueDate('');
+      setNewItemDueTime('');
+      setNewItemRepeat('none');
+      setNewItemAssignee('');
+      setShowAdvanced(false);
     } catch (error) {
       console.error('Failed to add item:', error);
     } finally {
@@ -129,6 +152,26 @@ export const ListDetailPage = () => {
 
   const uncheckedItems = items.filter(item => !item.checked);
   const checkedItems = items.filter(item => item.checked);
+  
+  const getFilteredItems = (itemList: typeof items) => {
+    switch (filter) {
+      case 'overdue':
+        return itemList.filter(item => item.dueAt && item.dueAt.toDate() < new Date());
+      case 'today':
+        return itemList.filter(item => item.dueAt && 
+          new Date(item.dueAt.toDate().toDateString()) === new Date(new Date().toDateString()));
+      case 'assigned':
+        return itemList.filter(item => item.assigneeUid === user?.uid);
+      default:
+        return itemList;
+    }
+  };
+  
+  const filteredUncheckedItems = getFilteredItems(uncheckedItems);
+  const overdueCount = uncheckedItems.filter(item => item.dueAt && item.dueAt.toDate() < new Date()).length;
+  const todayCount = uncheckedItems.filter(item => item.dueAt && 
+    new Date(item.dueAt.toDate().toDateString()) === new Date(new Date().toDateString())).length;
+  const assignedToMeCount = uncheckedItems.filter(item => item.assigneeUid === user?.uid).length;
 
   return (
     <div className="space-y-6">
@@ -203,6 +246,76 @@ export const ListDetailPage = () => {
               placeholder="メモ（任意）"
             />
           </div>
+          
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
+          >
+            <svg className={`w-4 h-4 mr-1 transform transition-transform ${showAdvanced ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            詳細設定
+          </button>
+          
+          {showAdvanced && (
+            <div className="space-y-4 p-4 bg-gray-50 rounded-md">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">期限日</label>
+                  <input
+                    type="date"
+                    value={newItemDueDate}
+                    onChange={(e) => setNewItemDueDate(e.target.value)}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">期限時間</label>
+                  <input
+                    type="time"
+                    value={newItemDueTime}
+                    onChange={(e) => setNewItemDueTime(e.target.value)}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    disabled={!newItemDueDate}
+                  />
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">繰り返し</label>
+                  <select
+                    value={newItemRepeat}
+                    onChange={(e) => setNewItemRepeat(e.target.value as any)}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    disabled={!newItemDueDate}
+                  >
+                    <option value="none">なし</option>
+                    <option value="daily">毎日</option>
+                    <option value="weekly">毎週</option>
+                    <option value="weekdays">平日のみ</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">担当者</label>
+                  <select
+                    value={newItemAssignee}
+                    onChange={(e) => setNewItemAssignee(e.target.value)}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">未割り当て</option>
+                    {members.map((member) => (
+                      <option key={member.uid} value={member.uid}>
+                        {member.displayName || member.email}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <button
             type="submit"
             disabled={isAdding || !newItemTitle.trim()}
@@ -215,36 +328,138 @@ export const ListDetailPage = () => {
 
       {uncheckedItems.length > 0 && (
         <div className="space-y-3">
-          <h3 className="text-lg font-medium text-gray-900">未購入</h3>
-          {uncheckedItems.map((item) => (
-            <div
-              key={item.id}
-              className="bg-white p-4 rounded-lg shadow border border-gray-200 flex items-center space-x-3"
-            >
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium text-gray-900">未購入</h3>
+            <div className="flex space-x-2">
               <button
-                onClick={() => handleToggleCheck(item.id, item.checked)}
-                className="flex-shrink-0 w-5 h-5 border-2 border-gray-300 rounded-full hover:border-blue-500 focus:outline-none focus:border-blue-500"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-medium text-gray-900">{item.title}</h4>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-sm text-gray-500">×{item.qty}</span>
-                    <button
-                      onClick={() => handleDeleteItem(item.id)}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                {item.note && <p className="text-sm text-gray-500">{item.note}</p>}
-                <UpdatedByInfo item={item} />
-              </div>
+                onClick={() => setFilter('all')}
+                className={`px-3 py-1 text-sm rounded-full ${
+                  filter === 'all' 
+                    ? 'bg-blue-100 text-blue-800' 
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                すべて ({uncheckedItems.length})
+              </button>
+              {overdueCount > 0 && (
+                <button
+                  onClick={() => setFilter('overdue')}
+                  className={`px-3 py-1 text-sm rounded-full ${
+                    filter === 'overdue' 
+                      ? 'bg-red-100 text-red-800' 
+                      : 'bg-red-50 text-red-600 hover:bg-red-100'
+                  }`}
+                >
+                  期限切れ ({overdueCount})
+                </button>
+              )}
+              {todayCount > 0 && (
+                <button
+                  onClick={() => setFilter('today')}
+                  className={`px-3 py-1 text-sm rounded-full ${
+                    filter === 'today' 
+                      ? 'bg-yellow-100 text-yellow-800' 
+                      : 'bg-yellow-50 text-yellow-600 hover:bg-yellow-100'
+                  }`}
+                >
+                  今日 ({todayCount})
+                </button>
+              )}
+              {assignedToMeCount > 0 && (
+                <button
+                  onClick={() => setFilter('assigned')}
+                  className={`px-3 py-1 text-sm rounded-full ${
+                    filter === 'assigned' 
+                      ? 'bg-green-100 text-green-800' 
+                      : 'bg-green-50 text-green-600 hover:bg-green-100'
+                  }`}
+                >
+                  私のタスク ({assignedToMeCount})
+                </button>
+              )}
             </div>
-          ))}
+          </div>
+          {filteredUncheckedItems.map((item) => {
+            const isOverdue = item.dueAt && item.dueAt.toDate() < new Date();
+            const isDueToday = item.dueAt && 
+              new Date(item.dueAt.toDate().toDateString()) === new Date(new Date().toDateString());
+            const assignee = members.find(m => m.uid === item.assigneeUid);
+            
+            return (
+              <div
+                key={item.id}
+                className={`p-4 rounded-lg shadow border flex items-center space-x-3 ${
+                  isOverdue 
+                    ? 'bg-red-50 border-red-200' 
+                    : isDueToday 
+                    ? 'bg-yellow-50 border-yellow-200' 
+                    : 'bg-white border-gray-200'
+                }`}
+              >
+                <button
+                  onClick={() => handleToggleCheck(item.id, item.checked)}
+                  className={`flex-shrink-0 w-5 h-5 border-2 rounded-full hover:border-blue-500 focus:outline-none focus:border-blue-500 ${
+                    isOverdue ? 'border-red-300' : isDueToday ? 'border-yellow-300' : 'border-gray-300'
+                  }`}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <h4 className={`text-sm font-medium ${
+                        isOverdue ? 'text-red-900' : isDueToday ? 'text-yellow-900' : 'text-gray-900'
+                      }`}>
+                        {item.title}
+                      </h4>
+                      {assignee && (
+                        <div className="flex items-center space-x-1">
+                          <div className="w-5 h-5 bg-blue-500 text-white text-xs rounded-full flex items-center justify-center font-medium">
+                            {(assignee.displayName || assignee.email || '?')[0].toUpperCase()}
+                          </div>
+                          <span className="text-xs text-gray-500">{assignee.displayName || assignee.email}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-sm text-gray-500">×{item.qty}</span>
+                      {item.dueAt && (
+                        <div className={`text-xs px-2 py-1 rounded ${
+                          isOverdue 
+                            ? 'bg-red-100 text-red-800' 
+                            : isDueToday 
+                            ? 'bg-yellow-100 text-yellow-800' 
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {item.dueAt.toDate().toLocaleDateString('ja-JP', { 
+                            month: 'short', 
+                            day: 'numeric',
+                            hour: item.dueAt.toDate().getHours() !== 23 || item.dueAt.toDate().getMinutes() !== 59 ? '2-digit' : undefined,
+                            minute: item.dueAt.toDate().getHours() !== 23 || item.dueAt.toDate().getMinutes() !== 59 ? '2-digit' : undefined
+                          })}
+                        </div>
+                      )}
+                      {item.repeat && item.repeat !== 'none' && (
+                        <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                          {item.repeat === 'daily' ? '毎日' : 
+                           item.repeat === 'weekly' ? '毎週' : 
+                           item.repeat === 'weekdays' ? '平日' : item.repeat}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => handleDeleteItem(item.id)}
+                        className="text-gray-400 hover:text-red-500"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  {item.note && <p className="text-sm text-gray-500 mt-1">{item.note}</p>}
+                  <UpdatedByInfo item={item} />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

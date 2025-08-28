@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useCallable } from '../hooks/useCallable';
 import { useSubscription } from '../hooks/useSubscription';
 import { Toast } from '../components/Toast';
+import { NotificationSettings } from '../components/NotificationSettings';
 import { Capacitor } from '@capacitor/core';
 
 export const SettingsPage = () => {
@@ -16,6 +17,7 @@ export const SettingsPage = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showFinalConfirm, setShowFinalConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   const handleDeleteAccount = async () => {
@@ -108,6 +110,25 @@ export const SettingsPage = () => {
                 <span className="text-sm font-medium text-gray-900 ml-2">{user.displayName}</span>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* 通知設定セクション */}
+        <div className="bg-white rounded-lg shadow p-6 mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">通知設定</h2>
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              リマインダー、担当割り当て、サイレント時間などの通知設定を管理できます。
+            </p>
+            <button
+              onClick={() => setShowNotificationSettings(true)}
+              className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            >
+              <svg className="-ml-1 mr-2 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-5 5v-5zM9 12h6m-6 4h6m2-9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2h5" />
+              </svg>
+              通知設定を開く
+            </button>
           </div>
         </div>
 
@@ -245,6 +266,11 @@ export const SettingsPage = () => {
           )}
         </div>
       </div>
+
+      <NotificationSettings
+        isOpen={showNotificationSettings}
+        onClose={() => setShowNotificationSettings(false)}
+      />
 
       {toast && (
         <Toast

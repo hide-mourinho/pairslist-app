@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -856,4 +856,341 @@ export const checkPlanLimits = onCall({ region: REGION }, async (request) => {
   }
   
   return { allowed: true, isPro: false };
+});
+
+// Reminder functions
+export const scheduleReminderSweep = onSchedule({
+  schedule: 'every 15 minutes',
+  region: REGION,
+  timeZone: 'Asia/Tokyo',
+}, async () => {
+  const now = new Date();
+  const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60 * 1000);
+  
+  console.log(`Running reminder sweep at ${now.toISOString()}`);
+  
+  try {
+    // Get all lists
+    const listsSnapshot = await db.collection('lists').get();
+    
+    let processedReminders = 0;
+    let sentNotifications = 0;
+    
+    for (const listDoc of listsSnapshot.docs) {
+      const listId = listDoc.id;
+      const listData = listDoc.data();
+      
+      // Get all items in this list that have reminders
+      const itemsSnapshot = await db.collection(`lists/${listId}/items`)
+        .where('remindAt', '!=', [])
+        .get();
+      
+      for (const itemDoc of itemsSnapshot.docs) {
+        const itemData = itemDoc.data();
+        const remindTimes = itemData.remindAt || [];
+        
+        // Check if any reminder should fire now
+        const pendingReminders = remindTimes.filter((timestamp: any) => {
+          const reminderTime = timestamp.toDate();
+          return reminderTime >= now && reminderTime <= fiveMinutesFromNow;
+        });
+        
+        if (pendingReminders.length > 0) {
+          processedReminders++;
+          
+          // Get list members for notification
+          const membersSnapshot = await db.collection(`lists/${listId}/members`).get();
+          const memberUids = membersSnapshot.docs.map(doc => doc.id);
+          
+          // Get assignee info if item is assigned
+          let assigneeUid = itemData.assigneeUid;
+          let targetUids = memberUids;
+          
+          if (assigneeUid) {
+            // Only send to assignee if item is assigned
+            targetUids = [assigneeUid];
+          }
+          
+          // Collect FCM tokens for target users
+          const deviceTokens: string[] = [];
+          
+          for (const uid of targetUids) {
+            // Check notification settings
+            const settingsDoc = await db.doc(`users/${uid}/settings/notifications`).get();
+            const settings = settingsDoc.data();
+            
+            if (settings && !settings.enabled) continue;
+            if (settings && !settings.reminders) continue;
+            
+            // Check silent hours
+            if (settings?.silentHours?.enabled) {
+              const nowTime = now.toTimeString().substring(0, 5); // "HH:MM"
+              const start = settings.silentHours.start;
+              const end = settings.silentHours.end;
+              
+              if (isInSilentHours(nowTime, start, end)) {
+                continue;
+              }
+            }
+            
+            try {
+              const tokensSnapshot = await db.collection(`users/${uid}/fcmTokens`).get();
+              tokensSnapshot.docs.forEach(doc => {
+                const tokenData = doc.data();
+                if (tokenData.token) {
+                  deviceTokens.push(tokenData.token);
+                }
+              });
+            } catch (error) {
+              console.warn(`Could not get FCM tokens for user ${uid}:`, error);
+            }
+          }
+          
+          if (deviceTokens.length > 0) {
+            // Send reminder notification
+            const title = assigneeUid ? 'リマインダー' : `${listData.name} - リマインダー`;
+            const body = `「${itemData.title}」の期限です`;
+            
+            const message = {
+              notification: {
+                title,
+                body,
+              },
+              data: {
+                type: 'reminder',
+                listId,
+                itemId: itemDoc.id,
+                url: `/lists/${listId}`
+              },
+              tokens: deviceTokens,
+            };
+            
+            try {
+              const response = await messaging.sendEachForMulticast(message);
+              sentNotifications += response.successCount;
+              
+              // Handle failed tokens
+              const failedTokens: string[] = [];
+              response.responses.forEach((resp, idx) => {
+                if (!resp.success) {
+                  console.error(`Failed to send reminder to token ${deviceTokens[idx]}:`, resp.error);
+                  failedTokens.push(deviceTokens[idx]);
+                }
+              });
+              
+              // Clean up invalid tokens
+              if (failedTokens.length > 0) {
+                const batch = db.batch();
+                for (const uid of targetUids) {
+                  for (const token of failedTokens) {
+                    const tokenRef = db.doc(`users/${uid}/fcmTokens/${token}`);
+                    batch.delete(tokenRef);
+                  }
+                }
+                await batch.commit();
+                console.log(`Cleaned up ${failedTokens.length} invalid tokens`);
+              }
+            } catch (error) {
+              console.error('Failed to send reminder notification:', error);
+            }
+          }
+          
+          // Remove fired reminders and schedule next occurrences for repeating items
+          const remainingReminders = remindTimes.filter((timestamp: any) => {
+            const reminderTime = timestamp.toDate();
+            return reminderTime > fiveMinutesFromNow;
+          });
+          
+          // Handle repeating items
+          if (itemData.repeat && itemData.repeat !== 'none' && itemData.dueAt) {
+            const nextDueDate = calculateNextDueDate(itemData.dueAt.toDate(), itemData.repeat);
+            if (nextDueDate) {
+              // Schedule reminder for next occurrence
+              const nextReminder = new Date(nextDueDate.getTime() - 60 * 60 * 1000); // 1 hour before
+              remainingReminders.push(Timestamp.fromDate(nextReminder));
+              
+              // Update due date
+              await db.doc(`lists/${listId}/items/${itemDoc.id}`).update({
+                dueAt: nextDueDate,
+                remindAt: remainingReminders
+              });
+            }
+          } else {
+            // Update reminders without changing due date
+            await db.doc(`lists/${listId}/items/${itemDoc.id}`).update({
+              remindAt: remainingReminders
+            });
+          }
+        }
+      }
+    }
+    
+    console.log(`Reminder sweep completed: processed ${processedReminders} reminders, sent ${sentNotifications} notifications`);
+    
+  } catch (error) {
+    console.error('Error in reminder sweep:', error);
+  }
+});
+
+// Helper function to check if current time is in silent hours
+function isInSilentHours(currentTime: string, startTime: string, endTime: string): boolean {
+  const current = timeToMinutes(currentTime);
+  const start = timeToMinutes(startTime);
+  const end = timeToMinutes(endTime);
+  
+  if (start < end) {
+    // Same day range (e.g., 09:00 to 17:00)
+    return current >= start && current <= end;
+  } else {
+    // Overnight range (e.g., 22:00 to 08:00)
+    return current >= start || current <= end;
+  }
+}
+
+function timeToMinutes(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+// Helper function to calculate next due date for repeating items
+function calculateNextDueDate(currentDue: Date, repeat: string): Date | null {
+  const next = new Date(currentDue);
+  
+  switch (repeat) {
+    case 'daily':
+      next.setDate(next.getDate() + 1);
+      break;
+    case 'weekly':
+      next.setDate(next.getDate() + 7);
+      break;
+    case 'weekdays':
+      next.setDate(next.getDate() + 1);
+      // Skip weekends
+      while (next.getDay() === 0 || next.getDay() === 6) {
+        next.setDate(next.getDate() + 1);
+      }
+      break;
+    default:
+      return null;
+  }
+  
+  return next;
+}
+
+// Assignment notification function
+export const sendAssignmentNotification = onCall({ region: REGION }, async (request) => {
+  const { auth, data } = request;
+  
+  if (!auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated');
+  }
+  
+  const { listId, itemId, assigneeUid } = data;
+  
+  if (!listId || !itemId || !assigneeUid) {
+    throw new HttpsError('invalid-argument', 'listId, itemId, and assigneeUid are required');
+  }
+  
+  try {
+    // Get item and list data
+    const [itemDoc, listDoc] = await Promise.all([
+      db.doc(`lists/${listId}/items/${itemId}`).get(),
+      db.doc(`lists/${listId}`).get()
+    ]);
+    
+    if (!itemDoc.exists || !listDoc.exists) {
+      throw new HttpsError('not-found', 'Item or list not found');
+    }
+    
+    const itemData = itemDoc.data()!;
+    const listData = listDoc.data()!;
+    
+    // Check notification settings for assignee
+    const settingsDoc = await db.doc(`users/${assigneeUid}/settings/notifications`).get();
+    const settings = settingsDoc.data();
+    
+    if (settings && (!settings.enabled || !settings.assignments)) {
+      return { success: true, sent: false, reason: 'notifications_disabled' };
+    }
+    
+    // Check silent hours
+    const now = new Date();
+    if (settings?.silentHours?.enabled) {
+      const nowTime = now.toTimeString().substring(0, 5);
+      if (isInSilentHours(nowTime, settings.silentHours.start, settings.silentHours.end)) {
+        return { success: true, sent: false, reason: 'silent_hours' };
+      }
+    }
+    
+    // Get assignee FCM tokens
+    const tokensSnapshot = await db.collection(`users/${assigneeUid}/fcmTokens`).get();
+    const deviceTokens = tokensSnapshot.docs.map(doc => doc.data().token).filter(Boolean);
+    
+    if (deviceTokens.length === 0) {
+      return { success: true, sent: false, reason: 'no_tokens' };
+    }
+    
+    // Get assigner name
+    let assignerName = 'Someone';
+    try {
+      const assignerDoc = await db.doc(`users/${auth.uid}`).get();
+      const assignerData = assignerDoc.data();
+      assignerName = assignerData?.displayName || 'Someone';
+    } catch (error) {
+      console.warn('Could not get assigner data:', error);
+    }
+    
+    // Send assignment notification
+    const title = `${listData.name} - 新しいタスク`;
+    const body = `${assignerName}があなたに「${itemData.title}」を割り当てました`;
+    
+    const message = {
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: 'assignment',
+        listId,
+        itemId,
+        url: `/lists/${listId}`
+      },
+      tokens: deviceTokens,
+    };
+    
+    const response = await messaging.sendEachForMulticast(message);
+    
+    // Handle failed tokens
+    const failedTokens: string[] = [];
+    response.responses.forEach((resp, idx) => {
+      if (!resp.success) {
+        console.error(`Failed to send assignment notification to token ${deviceTokens[idx]}:`, resp.error);
+        failedTokens.push(deviceTokens[idx]);
+      }
+    });
+    
+    // Clean up invalid tokens
+    if (failedTokens.length > 0) {
+      const batch = db.batch();
+      for (const token of failedTokens) {
+        const tokenRef = db.doc(`users/${assigneeUid}/fcmTokens/${token}`);
+        batch.delete(tokenRef);
+      }
+      await batch.commit();
+    }
+    
+    return { 
+      success: true, 
+      sent: true, 
+      successCount: response.successCount,
+      failureCount: response.failureCount
+    };
+    
+  } catch (error) {
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+    console.error('Error sending assignment notification:', error);
+    throw new HttpsError('internal', 'Failed to send assignment notification');
+  }
 });

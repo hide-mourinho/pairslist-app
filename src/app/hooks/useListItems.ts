@@ -8,6 +8,7 @@ import {
   runTransaction,
   writeBatch,
   serverTimestamp,
+  Timestamp,
 } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from './useAuth';
@@ -41,6 +42,10 @@ export const useListItems = (listId: string) => {
             ...doc.data(),
             createdAt: doc.data().createdAt?.toDate() || new Date(),
             updatedAt: doc.data().updatedAt?.toDate() || new Date(),
+            dueAt: doc.data().dueAt || null,
+            repeat: doc.data().repeat || 'none',
+            remindAt: doc.data().remindAt || [],
+            assigneeUid: doc.data().assigneeUid || null,
           })) as ShoppingItem[];
 
           const sortedItems = itemsList.sort((a, b) => {
@@ -67,7 +72,16 @@ export const useListItems = (listId: string) => {
     return unsubscribe;
   }, [listId]);
 
-  const addItem = async (title: string, note?: string, qty?: number) => {
+  const addItem = async (
+    title: string, 
+    options?: {
+      note?: string;
+      qty?: number;
+      dueAt?: Timestamp | null;
+      repeat?: 'none' | 'daily' | 'weekly' | 'weekdays';
+      assigneeUid?: string | null;
+    }
+  ) => {
     if (!user || !listId) throw new Error('User not authenticated or list not found');
 
     try {
@@ -75,17 +89,23 @@ export const useListItems = (listId: string) => {
       const itemRef = doc(collection(db, `lists/${listId}/items`));
       const listRef = doc(db, 'lists', listId);
       
-      batch.set(itemRef, {
+      const newItem = {
         title,
-        note: note || '',
-        qty: qty || 1,
+        note: options?.note || '',
+        qty: options?.qty || 1,
         checked: false,
-        assignedTo: null,
+        assignedTo: null, // Legacy field for backward compatibility
+        dueAt: options?.dueAt || null,
+        repeat: options?.repeat || 'none',
+        remindAt: [],
+        assigneeUid: options?.assigneeUid || null,
         createdBy: user.uid,
         updatedBy: user.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      };
+      
+      batch.set(itemRef, newItem);
       
       batch.update(listRef, {
         updatedAt: serverTimestamp(),
@@ -107,6 +127,10 @@ export const useListItems = (listId: string) => {
     qty?: number;
     checked?: boolean;
     assignedTo?: string | null;
+    dueAt?: Timestamp | null;
+    repeat?: 'none' | 'daily' | 'weekly' | 'weekdays';
+    remindAt?: Timestamp[];
+    assigneeUid?: string | null;
   }, options?: { optimistic?: boolean }) => {
     if (!listId || !user) throw new Error('List not found or user not authenticated');
 
@@ -200,6 +224,53 @@ export const useListItems = (listId: string) => {
     await updateItem(itemId, { checked }, { optimistic: true });
   };
 
+  const setItemDue = async (itemId: string, dueAt: Timestamp | null, repeat: 'none' | 'daily' | 'weekly' | 'weekdays' = 'none') => {
+    await updateItem(itemId, { dueAt, repeat });
+  };
+
+  const setItemAssignee = async (itemId: string, assigneeUid: string | null) => {
+    await updateItem(itemId, { assigneeUid });
+  };
+
+  const addReminder = async (itemId: string, remindAt: Timestamp) => {
+    const currentItem = items.find(item => item.id === itemId);
+    if (!currentItem) throw new Error('Item not found');
+    
+    const newReminders = [...currentItem.remindAt, remindAt].sort((a, b) => a.toMillis() - b.toMillis());
+    await updateItem(itemId, { remindAt: newReminders });
+  };
+
+  const removeReminder = async (itemId: string, reminderIndex: number) => {
+    const currentItem = items.find(item => item.id === itemId);
+    if (!currentItem) throw new Error('Item not found');
+    
+    const newReminders = currentItem.remindAt.filter((_, index) => index !== reminderIndex);
+    await updateItem(itemId, { remindAt: newReminders });
+  };
+
+  // Filtering helpers
+  const getItemsDue = (beforeDate?: Date) => {
+    const cutoff = beforeDate || new Date();
+    return items.filter(item => 
+      item.dueAt && 
+      item.dueAt.toDate() <= cutoff &&
+      !item.checked
+    );
+  };
+
+  const getItemsByAssignee = (assigneeUid: string) => {
+    return items.filter(item => item.assigneeUid === assigneeUid);
+  };
+
+  const getOverdueItems = () => {
+    const now = new Date();
+    return items.filter(item => 
+      item.dueAt && 
+      item.dueAt.toDate() < now &&
+      !item.checked
+    );
+  };
+
   return {
     items,
     loading,
@@ -208,5 +279,12 @@ export const useListItems = (listId: string) => {
     updateItem,
     deleteItem,
     toggleItemCheck,
+    setItemDue,
+    setItemAssignee,
+    addReminder,
+    removeReminder,
+    getItemsDue,
+    getItemsByAssignee,
+    getOverdueItems,
   };
 };

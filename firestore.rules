@@ -18,6 +18,21 @@ service cloud.firestore {
     match /users/{uid} {
       allow read, write: if isAuthed() && request.auth.uid == uid;
       
+      // FCM tokens subcollection
+      match /fcmTokens/{tokenId} {
+        allow read, write, delete: if isAuthed() && request.auth.uid == uid;
+      }
+      
+      // Settings subcollection
+      match /settings/{settingId} {
+        allow read, write: if isAuthed() && request.auth.uid == uid;
+      }
+      
+      // Device tokens (legacy - keeping for compatibility)
+      match /deviceTokens/{tokenId} {
+        allow read, write, delete: if isAuthed() && request.auth.uid == uid;
+      }
+      
       // Entitlements subcollection (Pro status)
       match /entitlements/{entitlementId} {
         allow read: if isAuthed() && request.auth.uid == uid;
@@ -47,7 +62,26 @@ service cloud.firestore {
     // List items
     match /lists/{listId}/items/{itemId} {
       allow read: if isMember(listId);
-      allow create, update, delete: if isMember(listId);
+      allow create, update, delete: if isMember(listId) && 
+        // Validate new fields if they exist
+        (
+          !('dueAt' in request.resource.data) || 
+          request.resource.data.dueAt is timestamp || 
+          request.resource.data.dueAt == null
+        ) &&
+        (
+          !('repeat' in request.resource.data) || 
+          request.resource.data.repeat in ['none', 'daily', 'weekly', 'weekdays']
+        ) &&
+        (
+          !('remindAt' in request.resource.data) || 
+          request.resource.data.remindAt is list
+        ) &&
+        (
+          !('assigneeUid' in request.resource.data) || 
+          request.resource.data.assigneeUid is string || 
+          request.resource.data.assigneeUid == null
+        );
     }
 
     // Invites
