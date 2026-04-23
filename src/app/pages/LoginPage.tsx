@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { Footer } from '../components/Footer';
 
 export const LoginPage = () => {
   const [email, setEmail] = useState('');
@@ -34,11 +35,16 @@ export const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      <div className="flex-1 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <div className="text-center">
-          <h2 className="text-3xl font-bold text-gray-900">PairsList</h2>
-          <p className="mt-2 text-sm text-gray-600">
+          <img
+            src="/logo.png"
+            alt="Pairslist"
+            className="mx-auto h-12 w-auto"
+          />
+          <p className="mt-3 text-sm text-gray-600">
             ログインしてリストを管理
           </p>
         </div>
@@ -142,6 +148,8 @@ export const LoginPage = () => {
           </div>
         </div>
       </div>
+      </div>
+      <Footer />
     </div>
   );
 };

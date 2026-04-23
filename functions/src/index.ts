@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { v4 as uuidv4 } from 'uuid';
@@ -45,7 +45,7 @@ export const createInvite = onCall({ region: REGION }, async (request) => {
       oneTime,
     });
 
-    const appUrl = process.env.APP_URL || process.env.VITE_PUBLIC_APP_URL || 'https://pairslist-933b1.web.app';
+    const appUrl = process.env.APP_URL || process.env.VITE_PUBLIC_APP_URL || 'https://your-project.web.app';
     const inviteUrl = `${appUrl}/accept-invite?token=${inviteToken}`;
 
     return {
@@ -731,17 +731,38 @@ async function deleteUserData(uid: string): Promise<void> {
 }
 
 // RevenueCat webhook handler
-export const revenuecatWebhook = onCall({ region: REGION, cors: true }, async (request) => {
-  // This should actually be an onRequest function, but for simplicity we'll use onCall
-  // In production, use onRequest with proper webhook signature validation
-  const { data } = request;
-  
-  if (!data || !data.event) {
-    throw new HttpsError('invalid-argument', 'Invalid webhook data');
+export const revenuecatWebhook = onRequest({ region: REGION }, async (req, res) => {
+  // Only accept POST requests
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
   }
 
-  const { event } = data;
-  
+  // Verify RevenueCat webhook shared secret
+  // Set REVENUECAT_WEBHOOK_SECRET in Firebase Functions config:
+  //   firebase functions:secrets:set REVENUECAT_WEBHOOK_SECRET
+  const webhookSecret = process.env.REVENUECAT_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error('REVENUECAT_WEBHOOK_SECRET is not configured');
+    res.status(500).send('Internal Server Error');
+    return;
+  }
+
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || authHeader !== webhookSecret) {
+    console.warn('RevenueCat webhook: unauthorized request');
+    res.status(401).send('Unauthorized');
+    return;
+  }
+
+  const body = req.body;
+  if (!body || !body.event) {
+    res.status(400).send('Invalid webhook data');
+    return;
+  }
+
+  const { event } = body;
+
   try {
     switch (event.type) {
       case 'INITIAL_PURCHASE':
@@ -749,24 +770,21 @@ export const revenuecatWebhook = onCall({ region: REGION, cors: true }, async (r
       case 'SUBSCRIPTION_EXTENDED':
       case 'SUBSCRIPTION_PAUSED':
       case 'SUBSCRIPTION_RESUMED':
-        await handleSubscriptionEvent(event);
-        break;
-      
       case 'CANCELLATION':
       case 'EXPIRATION':
       case 'BILLING_ISSUE':
       case 'PRODUCT_CHANGE':
         await handleSubscriptionEvent(event);
         break;
-        
+
       default:
         console.log(`Unhandled event type: ${event.type}`);
     }
-    
-    return { success: true };
+
+    res.status(200).json({ success: true });
   } catch (error) {
     console.error('RevenueCat webhook error:', error);
-    throw new HttpsError('internal', 'Webhook processing failed');
+    res.status(500).send('Webhook processing failed');
   }
 });
 

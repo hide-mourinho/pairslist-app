@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { useLists } from '../hooks/useLists';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 import { NotificationSettings } from '../components/NotificationSettings';
+import { SwipeableListCard } from '../components/SwipeableListCard';
 import { isNotificationSupported } from '../../lib/messaging';
 
 export const ListsPage = () => {
@@ -10,7 +10,7 @@ export const ListsPage = () => {
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const [newListName, setNewListName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-  const { lists, loading, error, createList } = useLists();
+  const { lists, loading, error, createList, deleteList } = useLists();
 
   const handleCreateList = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +35,7 @@ export const ListsPage = () => {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900">買い物リスト</h1>
+        <h1 className="text-2xl font-bold text-gray-900">リスト</h1>
         <div className="flex items-center space-x-2">
           {isNotificationSupported() && (
             <button
@@ -125,28 +125,11 @@ export const ListsPage = () => {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {lists.map((list) => (
-            <Link
+            <SwipeableListCard
               key={list.id}
-              to={`/lists/${list.id}`}
-              className="bg-white p-6 rounded-lg shadow border border-gray-200 hover:shadow-md transition-shadow duration-200"
-            >
-              <h3 className="text-lg font-medium text-gray-900 mb-2">{list.name}</h3>
-              <p className="text-sm text-gray-500">
-                {list.updatedAt.toLocaleDateString('ja-JP', {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </p>
-              <div className="mt-4 flex items-center text-sm text-gray-400">
-                <svg className="mr-1 h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                開く
-              </div>
-            </Link>
+              list={list}
+              onDelete={deleteList}
+            />
           ))}
         </div>
       )}

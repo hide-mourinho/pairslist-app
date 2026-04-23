@@ -4,12 +4,13 @@ import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  signInWithPopup,
+  signInWithCredential,
+  GoogleAuthProvider,
   signOut,
   updateProfile,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { auth, db, googleProvider } from '../../lib/firebase';
+import { auth, db } from '../../lib/firebase';
 import { isNativeApp } from '../../lib/platform';
 import { initializeGoogleAuth, signInWithGoogleNative, signOutGoogleNative } from '../../lib/nativeAuth';
 import { initSentry } from '../../lib/sentry';
@@ -116,27 +117,52 @@ export const useAuth = () => {
   };
 
   const signInWithGoogle = async () => {
-    try {
-      setError(null);
-      setLoading(true);
-      
-      if (isNativeApp) {
+    setError(null);
+    setLoading(true);
+
+    if (isNativeApp) {
+      try {
         const result = await signInWithGoogleNative();
         await createOrUpdateUserDoc(result.user);
         analytics.signIn('google');
         return result.user;
-      } else {
-        const result = await signInWithPopup(auth, googleProvider);
-        await createOrUpdateUserDoc(result.user);
-        analytics.signIn('google');
-        return result.user;
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'An error occurred';
+        setError(errorMessage);
+        throw error;
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
-      setError(errorMessage);
-      throw error;
-    } finally {
-      setLoading(false);
+    } else {
+      // Use Google Identity Services (GIS) to bypass /__/auth/handler sessionStorage issues
+      return new Promise<void>((resolve, reject) => {
+        const tokenClient = (window as any).google.accounts.oauth2.initTokenClient({
+          client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+          scope: 'email profile openid',
+          callback: async (tokenResponse: any) => {
+            if (tokenResponse.error) {
+              setError(tokenResponse.error);
+              setLoading(false);
+              reject(new Error(tokenResponse.error));
+              return;
+            }
+            try {
+              const credential = GoogleAuthProvider.credential(null, tokenResponse.access_token);
+              const result = await signInWithCredential(auth, credential);
+              await createOrUpdateUserDoc(result.user);
+              analytics.signIn('google');
+              resolve();
+            } catch (err) {
+              const errorMessage = err instanceof Error ? err.message : 'An error occurred';
+              setError(errorMessage);
+              reject(err);
+            } finally {
+              setLoading(false);
+            }
+          },
+        });
+        tokenClient.requestAccessToken({ prompt: '' });
+      });
     }
   };
 

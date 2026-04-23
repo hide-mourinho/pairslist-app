@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "your-firebase-project-id",
+    "default": "pairslist-933b1",
     "staging": "pairslist-933b1"
   },
   "targets": {},

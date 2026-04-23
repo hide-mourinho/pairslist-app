@@ -29,9 +29,11 @@ export const Layout = ({ children }: LayoutProps) => {
         <header className="bg-white shadow-sm border-b border-gray-200">
           <div className="max-w-4xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
-              <h1 className="text-xl font-semibold text-gray-900">
-                PairsList
-              </h1>
+              <img
+                src="/logo.png"
+                alt="Pairslist"
+                className="h-7 w-auto"
+              />
               <div className="flex items-center gap-4">
                 <span className="text-sm text-gray-600">
                   {user?.displayName || user?.email}

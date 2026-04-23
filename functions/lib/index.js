@@ -612,14 +612,33 @@ async function deleteUserData(uid) {
     await batch.commit();
 }
 // RevenueCat webhook handler
-exports.revenuecatWebhook = (0, https_1.onCall)({ region: REGION, cors: true }, async (request) => {
-    // This should actually be an onRequest function, but for simplicity we'll use onCall
-    // In production, use onRequest with proper webhook signature validation
-    const { data } = request;
-    if (!data || !data.event) {
-        throw new https_1.HttpsError('invalid-argument', 'Invalid webhook data');
+exports.revenuecatWebhook = (0, https_1.onRequest)({ region: REGION }, async (req, res) => {
+    // Only accept POST requests
+    if (req.method !== 'POST') {
+        res.status(405).send('Method Not Allowed');
+        return;
     }
-    const { event } = data;
+    // Verify RevenueCat webhook shared secret
+    // Set REVENUECAT_WEBHOOK_SECRET in Firebase Functions config:
+    //   firebase functions:secrets:set REVENUECAT_WEBHOOK_SECRET
+    const webhookSecret = process.env.REVENUECAT_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+        console.error('REVENUECAT_WEBHOOK_SECRET is not configured');
+        res.status(500).send('Internal Server Error');
+        return;
+    }
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || authHeader !== webhookSecret) {
+        console.warn('RevenueCat webhook: unauthorized request');
+        res.status(401).send('Unauthorized');
+        return;
+    }
+    const body = req.body;
+    if (!body || !body.event) {
+        res.status(400).send('Invalid webhook data');
+        return;
+    }
+    const { event } = body;
     try {
         switch (event.type) {
             case 'INITIAL_PURCHASE':
@@ -627,8 +646,6 @@ exports.revenuecatWebhook = (0, https_1.onCall)({ region: REGION, cors: true }, 
             case 'SUBSCRIPTION_EXTENDED':
             case 'SUBSCRIPTION_PAUSED':
             case 'SUBSCRIPTION_RESUMED':
-                await handleSubscriptionEvent(event);
-                break;
             case 'CANCELLATION':
             case 'EXPIRATION':
             case 'BILLING_ISSUE':
@@ -638,11 +655,11 @@ exports.revenuecatWebhook = (0, https_1.onCall)({ region: REGION, cors: true }, 
             default:
                 console.log(`Unhandled event type: ${event.type}`);
         }
-        return { success: true };
+        res.status(200).json({ success: true });
     }
     catch (error) {
         console.error('RevenueCat webhook error:', error);
-        throw new https_1.HttpsError('internal', 'Webhook processing failed');
+        res.status(500).send('Webhook processing failed');
     }
 });
 async function handleSubscriptionEvent(event) {

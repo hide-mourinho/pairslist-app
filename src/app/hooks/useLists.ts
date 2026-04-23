@@ -4,7 +4,8 @@ import {
   doc,
   addDoc,
   updateDoc,
-  deleteDoc,
+  getDocs,
+  writeBatch,
   query,
   where,
   orderBy,
@@ -29,6 +30,9 @@ export const useLists = () => {
       setLoading(false);
       return;
     }
+
+    setLoading(true);
+    setLists([]);
 
     // Query lists where user is a member using array-contains
     const listsQuery = query(
@@ -112,9 +116,12 @@ export const useLists = () => {
 
   const deleteList = async (listId: string) => {
     try {
-      await deleteDoc(doc(db, 'lists', listId));
-      
-      // Track analytics
+      const itemsSnap = await getDocs(collection(db, `lists/${listId}/items`));
+      const batch = writeBatch(db);
+      itemsSnap.docs.forEach(d => batch.delete(d.ref));
+      batch.delete(doc(db, 'lists', listId));
+      await batch.commit();
+
       analytics.listDelete(listId);
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to delete list');

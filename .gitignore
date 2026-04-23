@@ -27,7 +27,24 @@ dist-ssr
 .env
 .env.local
 .env.mcp
+.env.*.local
 
 # Firebase service account keys
 *firebase-adminsdk*.json
 serviceAccountKey.json
+*-service-account*.json
+
+# MCP (Model Context Protocol) - developer tooling, not for public repo
+mcp-config.json
+MCP_SETUP.md
+GITHUB_MCP_SETUP.md
+scripts/start-mcp-servers.sh
+scripts/stop-mcp-servers.sh
+.mcp-pids
+
+# Firebase local cache
+.firebase/
+
+# Claude Code project settings (local only)
+CLAUDE.md
+.claude/

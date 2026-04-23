@@ -28,6 +28,9 @@ export const useListItems = (listId: string) => {
       return;
     }
 
+    setLoading(true);
+    setItems([]);
+
     const q = query(
       collection(db, `lists/${listId}/items`),
       orderBy('updatedAt', 'desc')

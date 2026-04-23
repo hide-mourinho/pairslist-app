@@ -6,8 +6,8 @@ import { useMembers } from '../hooks/useMembers';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 import { Toast, useToast } from '../components/Toast';
 import { MemberManagementModal } from '../components/MemberManagementModal';
+import { SwipeableItemCard } from '../components/SwipeableItemCard';
 import { useAuth } from '../hooks/useAuth';
-import { useUserInfo, formatLastUpdated } from '../hooks/useUserInfo';
 import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 
@@ -37,6 +37,7 @@ export const ListDetailPage = () => {
   const { user } = useAuth();
 
   useEffect(() => {
+    setIsMember(null);
     const checkMembership = async () => {
       if (!user || !id) return;
       
@@ -102,12 +103,11 @@ export const ListDetailPage = () => {
   };
 
   const handleDeleteItem = async (itemId: string) => {
-    if (!confirm('このアイテムを削除しますか？')) return;
-
     try {
-      await deleteItem(itemId);
+      await deleteItem(itemId, { optimistic: true });
     } catch (error) {
       console.error('Failed to delete item:', error);
+      throw error;
     }
   };
 
@@ -379,87 +379,16 @@ export const ListDetailPage = () => {
               )}
             </div>
           </div>
-          {filteredUncheckedItems.map((item) => {
-            const isOverdue = item.dueAt && item.dueAt.toDate() < new Date();
-            const isDueToday = item.dueAt && 
-              new Date(item.dueAt.toDate().toDateString()) === new Date(new Date().toDateString());
-            const assignee = members.find(m => m.uid === item.assigneeUid);
-            
-            return (
-              <div
-                key={item.id}
-                className={`p-4 rounded-lg shadow border flex items-center space-x-3 ${
-                  isOverdue 
-                    ? 'bg-red-50 border-red-200' 
-                    : isDueToday 
-                    ? 'bg-yellow-50 border-yellow-200' 
-                    : 'bg-white border-gray-200'
-                }`}
-              >
-                <button
-                  onClick={() => handleToggleCheck(item.id, item.checked)}
-                  className={`flex-shrink-0 w-5 h-5 border-2 rounded-full hover:border-blue-500 focus:outline-none focus:border-blue-500 ${
-                    isOverdue ? 'border-red-300' : isDueToday ? 'border-yellow-300' : 'border-gray-300'
-                  }`}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <h4 className={`text-sm font-medium ${
-                        isOverdue ? 'text-red-900' : isDueToday ? 'text-yellow-900' : 'text-gray-900'
-                      }`}>
-                        {item.title}
-                      </h4>
-                      {assignee && (
-                        <div className="flex items-center space-x-1">
-                          <div className="w-5 h-5 bg-blue-500 text-white text-xs rounded-full flex items-center justify-center font-medium">
-                            {(assignee.displayName || assignee.email || '?')[0].toUpperCase()}
-                          </div>
-                          <span className="text-xs text-gray-500">{assignee.displayName || assignee.email}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-sm text-gray-500">×{item.qty}</span>
-                      {item.dueAt && (
-                        <div className={`text-xs px-2 py-1 rounded ${
-                          isOverdue 
-                            ? 'bg-red-100 text-red-800' 
-                            : isDueToday 
-                            ? 'bg-yellow-100 text-yellow-800' 
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {item.dueAt.toDate().toLocaleDateString('ja-JP', { 
-                            month: 'short', 
-                            day: 'numeric',
-                            hour: item.dueAt.toDate().getHours() !== 23 || item.dueAt.toDate().getMinutes() !== 59 ? '2-digit' : undefined,
-                            minute: item.dueAt.toDate().getHours() !== 23 || item.dueAt.toDate().getMinutes() !== 59 ? '2-digit' : undefined
-                          })}
-                        </div>
-                      )}
-                      {item.repeat && item.repeat !== 'none' && (
-                        <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
-                          {item.repeat === 'daily' ? '毎日' : 
-                           item.repeat === 'weekly' ? '毎週' : 
-                           item.repeat === 'weekdays' ? '平日' : item.repeat}
-                        </div>
-                      )}
-                      <button
-                        onClick={() => handleDeleteItem(item.id)}
-                        className="text-gray-400 hover:text-red-500"
-                      >
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  {item.note && <p className="text-sm text-gray-500 mt-1">{item.note}</p>}
-                  <UpdatedByInfo item={item} />
-                </div>
-              </div>
-            );
-          })}
+          {filteredUncheckedItems.map((item) => (
+            <SwipeableItemCard
+              key={item.id}
+              item={item}
+              members={members}
+              currentUserId={user?.uid}
+              onToggleCheck={() => handleToggleCheck(item.id, item.checked)}
+              onDelete={() => handleDeleteItem(item.id)}
+            />
+          ))}
         </div>
       )}
 
@@ -467,37 +396,14 @@ export const ListDetailPage = () => {
         <div className="space-y-3">
           <h3 className="text-lg font-medium text-gray-900">購入済み</h3>
           {checkedItems.map((item) => (
-            <div
+            <SwipeableItemCard
               key={item.id}
-              className="bg-gray-50 p-4 rounded-lg border border-gray-200 flex items-center space-x-3 opacity-75"
-            >
-              <button
-                onClick={() => handleToggleCheck(item.id, item.checked)}
-                className="flex-shrink-0 w-5 h-5 bg-blue-600 border-2 border-blue-600 rounded-full flex items-center justify-center hover:bg-blue-700 focus:outline-none"
-              >
-                <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-medium text-gray-500 line-through">{item.title}</h4>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-sm text-gray-400">×{item.qty}</span>
-                    <button
-                      onClick={() => handleDeleteItem(item.id)}
-                      className="text-gray-300 hover:text-red-400"
-                    >
-                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-                {item.note && <p className="text-sm text-gray-400 line-through">{item.note}</p>}
-                <UpdatedByInfo item={item} />
-              </div>
-            </div>
+              item={item}
+              members={members}
+              currentUserId={user?.uid}
+              onToggleCheck={() => handleToggleCheck(item.id, item.checked)}
+              onDelete={() => handleDeleteItem(item.id)}
+            />
           ))}
         </div>
       )}
@@ -604,16 +510,3 @@ export const ListDetailPage = () => {
   );
 };
 
-const UpdatedByInfo = ({ item }: { item: any }) => {
-  const { userInfo } = useUserInfo(item.updatedBy);
-  
-  if (!item.updatedBy || !userInfo || item.updatedBy === item.createdBy) {
-    return null;
-  }
-  
-  return (
-    <p className="text-xs text-gray-400 mt-1">
-      {formatLastUpdated(item.updatedAt, item.updatedBy, userInfo)}
-    </p>
-  );
-};

@@ -62,24 +62,25 @@ service cloud.firestore {
     // List items
     match /lists/{listId}/items/{itemId} {
       allow read: if isMember(listId);
-      allow create, update, delete: if isMember(listId) && 
+      allow delete: if isMember(listId);
+      allow create, update: if isMember(listId) &&
         // Validate new fields if they exist
         (
-          !('dueAt' in request.resource.data) || 
-          request.resource.data.dueAt is timestamp || 
+          !('dueAt' in request.resource.data) ||
+          request.resource.data.dueAt is timestamp ||
           request.resource.data.dueAt == null
         ) &&
         (
-          !('repeat' in request.resource.data) || 
+          !('repeat' in request.resource.data) ||
           request.resource.data.repeat in ['none', 'daily', 'weekly', 'weekdays']
         ) &&
         (
-          !('remindAt' in request.resource.data) || 
+          !('remindAt' in request.resource.data) ||
           request.resource.data.remindAt is list
         ) &&
         (
-          !('assigneeUid' in request.resource.data) || 
-          request.resource.data.assigneeUid is string || 
+          !('assigneeUid' in request.resource.data) ||
+          request.resource.data.assigneeUid is string ||
           request.resource.data.assigneeUid == null
         );
     }
